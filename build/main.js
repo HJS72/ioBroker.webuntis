@@ -160,6 +160,41 @@ class Webuntis extends utils.Adapter {
             }
         }
     }
+    // Diagnostics: show raw JSON-RPC error and the REST data the web UI uses.
+    async logRawTimetable(untis, weekName, start, end, formatDate) {
+        var _a, _b, _c, _d, _e, _f, _g;
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        const raw = untis;
+        const person = raw.sessionInformation;
+        const cut = (value) => { var _a, _b; return (_b = (_a = JSON.stringify(value)) === null || _a === void 0 ? void 0 : _a.slice(0, 1500)) !== null && _b !== void 0 ? _b : 'undefined'; };
+        try {
+            const res = await raw.axios({
+                method: 'POST', url: '/WebUntis/jsonrpc.do', params: { school: raw.school }, headers: { Cookie: raw._buildCookies() },
+                data: { id: raw.id, method: 'getTimetable', jsonrpc: '2.0', params: { options: {
+                            element: { id: person.personId, type: person.personType },
+                            startDate: raw.convertDateToUntis(start), endDate: raw.convertDateToUntis(end),
+                        } } },
+            });
+            this.log.info(`${weekName}: raw JSON-RPC (personId ${person.personId}, type ${person.personType}): ${cut((_a = res.data.error) !== null && _a !== void 0 ? _a : { resultCount: (_b = res.data.result) === null || _b === void 0 ? void 0 : _b.length })}`);
+        }
+        catch (error) {
+            this.log.info(`${weekName}: raw JSON-RPC failed: ${error instanceof Error ? error.message : String(error)}`);
+        }
+        try {
+            if (typeof person.jwt_token !== 'string')
+                await raw._getJWT(false);
+            const res = await raw.axios({
+                method: 'GET', url: '/WebUntis/api/rest/view/v1/timetable/entries', headers: { Authorization: `Bearer ${person.jwt_token}`, Cookie: raw._buildCookies() },
+                params: { start: formatDate(start), end: formatDate(end), format: 1, resourceType: 'STUDENT', resources: person.personId },
+            });
+            const days = Array.isArray((_c = res.data) === null || _c === void 0 ? void 0 : _c.days) ? res.data.days.map((day) => { var _a, _b; return `${day.date}:${(_b = (_a = day.gridEntries) === null || _a === void 0 ? void 0 : _a.length) !== null && _b !== void 0 ? _b : 0}`; }) : res.data;
+            this.log.info(`${weekName}: raw REST entries: ${cut(days)}`);
+            this.log.debug(`${weekName}: raw REST first entry: ${cut((_g = (_f = (_e = (_d = res.data) === null || _d === void 0 ? void 0 : _d.days) === null || _e === void 0 ? void 0 : _e.find((day) => { var _a; return (_a = day.gridEntries) === null || _a === void 0 ? void 0 : _a.length; })) === null || _f === void 0 ? void 0 : _f.gridEntries) === null || _g === void 0 ? void 0 : _g[0])}`);
+        }
+        catch (error) {
+            this.log.info(`${weekName}: raw REST failed: ${error instanceof Error ? error.message : String(error)}`);
+        }
+    }
     async updateWeeklyTimetable() {
         var _a, _b;
         const prefix = 'accounts.primary';
@@ -237,6 +272,9 @@ class Webuntis extends utils.Adapter {
                         catch (error) {
                             this.log.warn(`${weekName}: single-day timetable failed for ${formatDate(date)}: ${error instanceof Error ? error.message : String(error)}`);
                         }
+                    }
+                    if (!this.config.anonymous && dates.some(date => !lessons.some(lesson => lesson.date === date.getFullYear() * 10000 + (date.getMonth() + 1) * 100 + date.getDate()))) {
+                        await this.logRawTimetable(untis, weekName, dates[0], dates[4], formatDate);
                     }
                     let exams = null;
                     try {

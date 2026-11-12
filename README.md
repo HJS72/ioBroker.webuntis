@@ -59,7 +59,21 @@ Passwords are stored in ioBroker's encrypted native configuration. Keep access t
 ioBroker Admin and backups restricted because they contain children's information.
 
 Each `accounts.<ID>.timetable` state contains JSON with `startDate`, `endDate`
-and the WebUntis `lessons` array for the current local Monday through Sunday.
+and the WebUntis `lessons` array for the current local Monday through Friday.
+The states `accounts.<ID>.montag`, `.dienstag`, `.mittwoch`, `.donnerstag`
+and `.freitag` each contain JSON with `date` and that day's `lessons`, sorted
+by start time. Days without lessons have an empty array.
+Individual states are also available at `<username>.timetable.<day>.<lesson>`,
+for example `webuntis.0.child.timetable.montag.1.START`. Lessons are numbered
+from 1 in start-time order. Each has `START` and `END` (`HH:MM`), `FACH`,
+`ORT`, `LEHRER`, `STATUS`, `INFO` and `VERTRETUNG`. Each day has `DATUM`
+and `ANZAHL` states. Multiple subjects, rooms or teachers are comma-separated.
+Special characters in usernames are percent-encoded (including dots); anonymous
+mode uses the class name. Duplicate or reserved usernames cannot have separate
+individual state trees under the plain username, so `%2D<ID>` is appended to
+their names. Existing JSON states remain available. When an account is renamed
+or duplicate usernames are added or removed, its old state tree remains and may
+be removed manually.
 Dates and lesson fields come from WebUntis. The `connection` and `lastUpdated`
 states indicate whether the last refresh succeeded and when data was last updated.
 On failure the last successful timetable remains available; check `connection`

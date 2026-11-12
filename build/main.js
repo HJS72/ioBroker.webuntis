@@ -31,6 +31,8 @@ const utils = __importStar(require("@iobroker/adapter-core"));
 const webuntis_1 = __importDefault(require("webuntis"));
 const week_1 = require("./week");
 const host_1 = require("./host");
+const weekDayNames = ['montag', 'dienstag', 'mittwoch', 'donnerstag', 'freitag'];
+const reservedAccountRoots = new Set(['accounts', 'info', 'inbox', 'newsfeed', '0', '1']);
 // Load your modules here, e.g.:
 // import * as fs from "fs";
 class Webuntis extends utils.Adapter {
@@ -180,11 +182,17 @@ class Webuntis extends utils.Adapter {
                 }
             }
             let allConnected = accounts.length > 0;
-            for (const account of accounts) {
+            const roots = accounts.map(account => encodeURIComponent((account.anonymous ? account.className : account.username) || account.id).replace(/[.!'()*]/g, character => `%${character.charCodeAt(0).toString(16).toUpperCase()}`));
+            for (const [accountIndex, account] of accounts.entries()) {
                 if (this.stopped)
                     break;
                 try {
-                    if (!await this.updateWeeklyTimetable(account))
+                    const usernameRoot = roots[accountIndex];
+                    const root = reservedAccountRoots.has(usernameRoot) || roots.indexOf(usernameRoot) !== roots.lastIndexOf(usernameRoot)
+                        ? `${usernameRoot}%2D${account.id}` : usernameRoot;
+                    if (root.length > 180)
+                        this.log.error(`Cannot create individual timetable states for account ${account.id}: username is too long`);
+                    if (!await this.updateWeeklyTimetable(account, root.length <= 180 ? root : undefined))
                         allConnected = false;
                 }
                 catch (_error) {
@@ -204,12 +212,13 @@ class Webuntis extends utils.Adapter {
             }
         }
     }
-    async updateWeeklyTimetable(account) {
+    async updateWeeklyTimetable(account, root) {
         const prefix = `accounts.${account.id}`;
         for (const [name, type, role] of [
             ['timetable', 'string', 'json'],
             ['connection', 'boolean', 'indicator.connected'],
             ['lastUpdated', 'number', 'value.time'],
+            ...weekDayNames.map(name => [name, 'string', 'json']),
         ]) {
             await this.setObjectNotExistsAsync(`${prefix}.${name}`, {
                 type: 'state', common: { name, type, role, read: true, write: false }, native: {},
@@ -232,16 +241,29 @@ class Webuntis extends utils.Adapter {
                 const schoolClass = classes.find(item => item.name === account.className);
                 if (!schoolClass)
                     throw new Error('Class not found');
-                lessons = await untis.getTimetableForRange(dates[0], dates[6], schoolClass.id, webuntis_1.default.TYPES.CLASS);
+                lessons = await untis.getTimetableForRange(dates[0], dates[4], schoolClass.id, webuntis_1.default.TYPES.CLASS);
             }
             else {
-                lessons = await untis.getOwnTimetableForRange(dates[0], dates[6]);
+                lessons = await untis.getOwnTimetableForRange(dates[0], dates[4]);
             }
             const formatDate = (date) => [date.getFullYear(),
                 String(date.getMonth() + 1).padStart(2, '0'), String(date.getDate()).padStart(2, '0')].join('-');
+            const days = dates.map(date => {
+                const untisDate = date.getFullYear() * 10000 + (date.getMonth() + 1) * 100 + date.getDate();
+                return {
+                    date: formatDate(date),
+                    lessons: lessons.filter(lesson => lesson.date === untisDate).sort((first, second) => first.startTime - second.startTime),
+                };
+            });
             await this.setStateAsync(`${prefix}.timetable`, JSON.stringify({
-                startDate: formatDate(dates[0]), endDate: formatDate(dates[6]), lessons,
+                startDate: formatDate(dates[0]), endDate: formatDate(dates[4]),
+                lessons: days.reduce((all, day) => all.concat(day.lessons), []),
             }), true);
+            for (const [index, day] of days.entries()) {
+                await this.setStateAsync(`${prefix}.${weekDayNames[index]}`, JSON.stringify(day), true);
+            }
+            if (root)
+                await this.writeLessonStates(account, root, days);
             await this.setStateAsync(`${prefix}.lastUpdated`, Date.now(), true);
             await this.setStateAsync(`${prefix}.connection`, true, true);
             return true;
@@ -254,6 +276,61 @@ class Webuntis extends utils.Adapter {
         finally {
             if (loggedIn && untis) {
                 await untis.logout().catch(() => this.log.debug(`Unable to close session for account ${account.id}`));
+            }
+        }
+    }
+    async writeLessonStates(account, root, days) {
+        var _a, _b;
+        const existing = await this.getObjectAsync(root);
+        if (existing && existing.native.webuntisAccountId !== account.id) {
+            throw new Error('Account object already exists');
+        }
+        await this.setObjectNotExistsAsync(root, {
+            type: 'device', common: { name: account.anonymous ? account.className || account.id : account.username || account.id },
+            native: { webuntisAccountId: account.id },
+        });
+        await this.setObjectNotExistsAsync(`${root}.timetable`, {
+            type: 'channel', common: { name: 'Timetable' }, native: { webuntisAccountId: account.id },
+        });
+        for (const [dayIndex, day] of days.entries()) {
+            const dayPrefix = `${root}.timetable.${weekDayNames[dayIndex]}`;
+            await this.setObjectNotExistsAsync(dayPrefix, {
+                type: 'channel', common: { name: weekDayNames[dayIndex] }, native: { webuntisAccountId: account.id },
+            });
+            for (const [index, lesson] of day.lessons.entries()) {
+                const lessonPrefix = `${dayPrefix}.${index + 1}`;
+                await this.setObjectNotExistsAsync(lessonPrefix, {
+                    type: 'channel', common: { name: `Lesson ${index + 1}` }, native: { webuntisAccountId: account.id },
+                });
+                const formatTime = (time) => Number.isInteger(time) && time >= 0 && time <= 2359 && time % 100 < 60
+                    ? `${String(Math.floor(time / 100)).padStart(2, '0')}:${String(time % 100).padStart(2, '0')}` : '';
+                const values = {
+                    START: formatTime(lesson.startTime), END: formatTime(lesson.endTime),
+                    FACH: (lesson.su || []).map(subject => subject.name).filter(Boolean).join(', '),
+                    ORT: (lesson.ro || []).map(room => room.name).filter(Boolean).join(', '),
+                    LEHRER: (lesson.te || []).map(teacher => teacher.longname || teacher.name).filter(Boolean).join(', '),
+                    STATUS: lesson.code || 'regular', INFO: lesson.info || '', VERTRETUNG: lesson.substText || '',
+                };
+                for (const [name, value] of Object.entries(values)) {
+                    await this.setObjectNotExistsAsync(`${lessonPrefix}.${name}`, {
+                        type: 'state', common: { name, type: 'string', role: 'text', read: true, write: false }, native: {},
+                    });
+                    await this.setStateAsync(`${lessonPrefix}.${name}`, value, true);
+                }
+            }
+            const startkey = `${this.namespace}.${dayPrefix}.`;
+            const objects = await this.getObjectViewAsync('system', 'channel', { startkey, endkey: `${startkey}\u9999` });
+            for (const row of objects.rows) {
+                const suffix = row.id.slice(startkey.length);
+                if (/^[1-9]\d*$/.test(suffix) && Number(suffix) > day.lessons.length && ((_b = (_a = row.value) === null || _a === void 0 ? void 0 : _a.native) === null || _b === void 0 ? void 0 : _b.webuntisAccountId) === account.id) {
+                    await this.delObjectAsync(`${dayPrefix}.${suffix}`, { recursive: true });
+                }
+            }
+            for (const [name, value, type] of [['DATUM', day.date, 'string'], ['ANZAHL', day.lessons.length, 'number']]) {
+                await this.setObjectNotExistsAsync(`${dayPrefix}.${name}`, {
+                    type: 'state', common: { name, type, role: type === 'number' ? 'value' : 'text', read: true, write: false }, native: {},
+                });
+                await this.setStateAsync(`${dayPrefix}.${name}`, value, true);
             }
         }
     }

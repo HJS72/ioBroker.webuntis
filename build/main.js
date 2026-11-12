@@ -217,9 +217,27 @@ class Webuntis extends utils.Adapter {
                 }
                 try {
                     const dates = (0, week_1.getWeekDates)(referenceDate, weekOffset);
+                    const client = untis;
                     const lessons = this.config.anonymous
-                        ? await untis.getTimetableForRange(dates[0], dates[4], classId, webuntis_1.default.TYPES.CLASS)
-                        : await untis.getOwnTimetableForRange(dates[0], dates[4]);
+                        ? await client.getTimetableForRange(dates[0], dates[4], classId, webuntis_1.default.TYPES.CLASS)
+                        : await client.getOwnTimetableForRange(dates[0], dates[4]);
+                    this.log.info(`${weekName}: range ${formatDate(dates[0])}..${formatDate(dates[4])} (classId ${classId}, anonymous ${!!this.config.anonymous}) returned ${lessons.length} lessons, dates: ${JSON.stringify([...new Set(lessons.map(lesson => lesson.date))].sort())}`);
+                    // Some servers silently drop days from range queries; retry empty days individually.
+                    for (const date of dates) {
+                        const untisDate = date.getFullYear() * 10000 + (date.getMonth() + 1) * 100 + date.getDate();
+                        if (lessons.some(lesson => lesson.date === untisDate))
+                            continue;
+                        try {
+                            const single = this.config.anonymous
+                                ? await client.getTimetableFor(date, classId, webuntis_1.default.TYPES.CLASS)
+                                : await client.getOwnTimetableFor(date);
+                            this.log.info(`${weekName}: no lessons in range for ${formatDate(date)}; single-day request returned ${single.length} lessons (dates ${JSON.stringify([...new Set(single.map(lesson => lesson.date))])})`);
+                            lessons.push(...single);
+                        }
+                        catch (error) {
+                            this.log.warn(`${weekName}: single-day timetable failed for ${formatDate(date)}: ${error instanceof Error ? error.message : String(error)}`);
+                        }
+                    }
                     let exams = null;
                     try {
                         const result = await untis.getExamsForRange(dates[0], dates[4], classId, false);
@@ -230,8 +248,8 @@ class Webuntis extends utils.Adapter {
                         }
                         exams = result;
                     }
-                    catch (_error) {
-                        this.log.info(`Exam data unavailable for ${weekName}`);
+                    catch (error) {
+                        this.log.info(`Exam data unavailable for ${weekName}: ${error instanceof Error ? error.message : String(error)}`);
                     }
                     const days = dates.map(date => {
                         const untisDate = date.getFullYear() * 10000 + (date.getMonth() + 1) * 100 + date.getDate();
@@ -262,9 +280,9 @@ class Webuntis extends utils.Adapter {
                     await this.setStateAsync(`${weekPrefix}.examsAvailable`, exams !== null, true);
                     await this.setStateAsync(`${weekPrefix}.connection`, true, true);
                 }
-                catch (_error) {
+                catch (error) {
                     allWeeksUpdated = false;
-                    this.log.error(`Unable to update timetable ${weekName}`);
+                    this.log.error(`Unable to update timetable ${weekName}: ${error instanceof Error ? error.stack || error.message : String(error)}`);
                     await this.setStateAsync(`${weekPrefix}.connection`, false, true);
                 }
             }
@@ -274,8 +292,8 @@ class Webuntis extends utils.Adapter {
             await this.setStateAsync('info.connection', allWeeksUpdated, true);
             return allWeeksUpdated;
         }
-        catch (_error) {
-            this.log.error('Unable to update weekly timetable');
+        catch (error) {
+            this.log.error(`Unable to update weekly timetable: ${error instanceof Error ? error.stack || error.message : String(error)}`);
             for (const weekName of ['this_week', 'next_week']) {
                 const week = await this.getObjectAsync(`timetable.${weekName}`);
                 if (((_b = week === null || week === void 0 ? void 0 : week.native) === null || _b === void 0 ? void 0 : _b.webuntisAccountId) === 'primary') {

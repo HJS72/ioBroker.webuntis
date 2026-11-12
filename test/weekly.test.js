@@ -181,7 +181,6 @@ describe('weekly timetable polling', () => {
         } });
         await adapter.onReady();
         await new Promise(resolve => setImmediate(resolve));
-        assert(FakeUntis.sessions.every(session => !session.legacyRequests));
         assert(!Object.keys(adapter.objects).some(id => id.startsWith('0.') || id.startsWith('1.')));
         assert.equal(adapter.states['timetable.this_week.montag.1.FACH'], 'Mathe, Physik');
     });

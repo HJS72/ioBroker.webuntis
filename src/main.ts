@@ -141,36 +141,56 @@ class Webuntis extends utils.Adapter {
         }
     }
 
-    // Diagnostics: show raw JSON-RPC error and the REST data the web UI uses.
-    private async logRawTimetable(untis: APIWebUntis, weekName: string, start: Date, end: Date, formatDate: (date: Date) => string): Promise<void> {
+    // The JSON-RPC API can omit days the web UI shows; the REST timetable has them.
+    private async fetchRestLessons(untis: APIWebUntis, start: Date, end: Date, formatDate: (date: Date) => string): Promise<Lesson[]> {
         // eslint-disable-next-line @typescript-eslint/no-explicit-any
         const raw = untis as any;
         const person = raw.sessionInformation;
-        const cut = (value: unknown): string => JSON.stringify(value)?.slice(0, 1500) ?? 'undefined';
-        try {
-            const res = await raw.axios({
-                method: 'POST', url: '/WebUntis/jsonrpc.do', params: { school: raw.school }, headers: { Cookie: raw._buildCookies() },
-                data: { id: raw.id, method: 'getTimetable', jsonrpc: '2.0', params: { options: {
-                    element: { id: person.personId, type: person.personType },
-                    startDate: raw.convertDateToUntis(start), endDate: raw.convertDateToUntis(end),
-                } } },
-            });
-            this.log.info(`${weekName}: raw JSON-RPC (personId ${person.personId}, type ${person.personType}): ${cut(res.data.error ?? { resultCount: res.data.result?.length })}`);
-        } catch (error) {
-            this.log.info(`${weekName}: raw JSON-RPC failed: ${error instanceof Error ? error.message : String(error)}`);
+        if (typeof person.jwt_token !== 'string') await raw._getJWT(false);
+        const res = await raw.axios({
+            method: 'GET', url: '/WebUntis/api/rest/view/v1/timetable/entries',
+            headers: { Authorization: `Bearer ${person.jwt_token}`, Cookie: raw._buildCookies() },
+            params: { start: formatDate(start), end: formatDate(end), format: 1, resourceType: 'STUDENT', resources: person.personId },
+        });
+        interface Entry {
+            name?: string; shortName?: string; longName?: string; displayName?: string;
         }
-        try {
-            if (typeof person.jwt_token !== 'string') await raw._getJWT(false);
-            const res = await raw.axios({
-                method: 'GET', url: '/WebUntis/api/rest/view/v1/timetable/entries', headers: { Authorization: `Bearer ${person.jwt_token}`, Cookie: raw._buildCookies() },
-                params: { start: formatDate(start), end: formatDate(end), format: 1, resourceType: 'STUDENT', resources: person.personId },
-            });
-            const days = Array.isArray(res.data?.days) ? res.data.days.map((day: { date: string; gridEntries?: unknown[] }) => `${day.date}:${day.gridEntries?.length ?? 0}`) : res.data;
-            this.log.info(`${weekName}: raw REST entries: ${cut(days)}`);
-            this.log.debug(`${weekName}: raw REST first entry: ${cut(res.data?.days?.find((day: { gridEntries?: unknown[] }) => day.gridEntries?.length)?.gridEntries?.[0])}`);
-        } catch (error) {
-            this.log.info(`${weekName}: raw REST failed: ${error instanceof Error ? error.message : String(error)}`);
+        interface GridEntry {
+            status?: string; substitutionText?: string; lessonInfo?: string; lessonText?: string;
+            duration?: { start?: string; end?: string };
+            [position: string]: unknown;
         }
+        const toTime = (value?: string): number => {
+            const match = /T(\d{2}):(\d{2})/.exec(value || '');
+            return match ? Number(match[1]) * 100 + Number(match[2]) : NaN;
+        };
+        const lessons: Lesson[] = [];
+        for (const day of (res.data?.days || []) as { date: string; gridEntries?: GridEntry[] }[]) {
+            const date = Number(day.date.replace(/-/g, ''));
+            for (const entry of day.gridEntries || []) {
+                const byType: Record<string, { name: string; longname: string }[]> = { SUBJECT: [], ROOM: [], TEACHER: [] };
+                for (const [key, value] of Object.entries(entry)) {
+                    if (!/^position\d+$/.test(key) || !Array.isArray(value)) continue;
+                    for (const item of value as { current?: Entry & { type?: string } }[]) {
+                        const current = item.current;
+                        if (current?.type && byType[current.type]) {
+                            byType[current.type].push({
+                                name: current.shortName || current.displayName || current.name || '',
+                                longname: current.longName || current.displayName || '',
+                            });
+                        }
+                    }
+                }
+                const status = entry.status || '';
+                lessons.push({
+                    date, startTime: toTime(entry.duration?.start), endTime: toTime(entry.duration?.end),
+                    su: byType.SUBJECT, ro: byType.ROOM, te: byType.TEACHER,
+                    code: status === 'CANCELLED' ? 'cancelled' : status && status !== 'REGULAR' ? 'irregular' : undefined,
+                    info: entry.lessonInfo || entry.lessonText || '', substText: entry.substitutionText || '',
+                } as unknown as Lesson);
+            }
+        }
+        return lessons;
     }
 
     private async updateWeeklyTimetable(): Promise<boolean> {
@@ -247,8 +267,19 @@ class Webuntis extends utils.Adapter {
                             this.log.warn(`${weekName}: single-day timetable failed for ${formatDate(date)}: ${error instanceof Error ? error.message : String(error)}`);
                         }
                     }
-                    if (!this.config.anonymous && dates.some(date => !lessons.some(lesson => lesson.date === date.getFullYear() * 10000 + (date.getMonth() + 1) * 100 + date.getDate()))) {
-                        await this.logRawTimetable(untis, weekName, dates[0], dates[4], formatDate);
+                    const missing = dates.filter(date => !lessons.some(lesson => lesson.date === date.getFullYear() * 10000 + (date.getMonth() + 1) * 100 + date.getDate()));
+                    if (!this.config.anonymous && missing.length) {
+                        try {
+                            const restLessons = await this.fetchRestLessons(untis, dates[0], dates[4], formatDate);
+                            for (const date of missing) {
+                                const untisDate = date.getFullYear() * 10000 + (date.getMonth() + 1) * 100 + date.getDate();
+                                const found = restLessons.filter(lesson => lesson.date === untisDate);
+                                this.log.info(`${weekName}: REST fallback for ${formatDate(date)} returned ${found.length} lessons`);
+                                lessons.push(...found);
+                            }
+                        } catch (error) {
+                            this.log.warn(`${weekName}: REST timetable fallback failed: ${error instanceof Error ? error.message : String(error)}`);
+                        }
                     }
                     let exams: Exam[] | null = null;
                     try {

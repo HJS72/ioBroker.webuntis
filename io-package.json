@@ -147,12 +147,12 @@
         "materialize": true,
         "dependencies": [
             {
-                "js-controller": ">=2.0.0"
+                "js-controller": ">=3.0.0"
             }
         ],
         "globalDependencies": [
             {
-                "admin": ">=4.0.9"
+                "admin": ">=4.0.10"
             }
         ]
     },
@@ -162,13 +162,16 @@
         "username": "",
         "client_secret": "",
         "school": "",
-        "baseUrl": ""
+        "baseUrl": "",
+        "accounts_json": ""
     },
     "protectedNative": [
-        "client_secret"
+        "client_secret",
+        "accounts_json"
     ],
     "encryptedNative": [
-        "client_secret"
+        "client_secret",
+        "accounts_json"
     ],
     "objects": [],
     "instanceObjects": [

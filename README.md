@@ -46,7 +46,29 @@ now go to the configuration-window in iobroker
 after the insert of your Username (child or parent) and the password for this account, you can take 
 the school-secret and the school-basr-Url to the configuration.
 
-Save and at this moment you will become the lessons for the next day.
+Save to start polling. The existing account (or anonymous class) is available as
+`accounts.primary`. Add other children's logins under **Additional accounts**;
+each needs a unique ID, username, password, school name and WebUntis host.
+IDs may contain letters, numbers, underscores and hyphens; `primary` is reserved.
+This version requires js-controller 3.0 or later and Admin 4.0.10 or later for
+automatic encryption and decryption of configuration.
+Passwords are stored in ioBroker's encrypted native configuration. Keep access to
+ioBroker Admin and backups restricted because they contain children's information.
+
+Each `accounts.<ID>.timetable` state contains JSON with `startDate`, `endDate`
+and the WebUntis `lessons` array for the current local Monday through Sunday.
+Dates and lesson fields come from WebUntis. The `connection` and `lastUpdated`
+states indicate whether the last refresh succeeded and when data was last updated.
+On failure the last successful timetable remains available; check `connection`
+and `lastUpdated` before using it. Polling retries hourly. The original daily,
+inbox and news states remain available for the primary account only. Anonymous
+mode applies to the primary class; additional accounts use individual logins.
+Removing or renaming an account does not delete its old states; remove those
+states manually if they are no longer needed.
+
+Login and timetable access depend on school permissions and WebUntis API
+compatibility. Parent accounts only return the timetable exposed by WebUntis for
+that account; use individual student logins when needed.
 
 please feel free, to make a proposal for recommend versions.
 

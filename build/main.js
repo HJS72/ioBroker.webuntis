@@ -29,6 +29,7 @@ Object.defineProperty(exports, "__esModule", { value: true });
 // you need to create an adapter
 const utils = __importStar(require("@iobroker/adapter-core"));
 const webuntis_1 = __importDefault(require("webuntis"));
+const week_1 = require("./week");
 // Load your modules here, e.g.:
 // import * as fs from "fs";
 class Webuntis extends utils.Adapter {
@@ -37,6 +38,7 @@ class Webuntis extends utils.Adapter {
             ...options,
             name: 'webuntis',
         });
+        this.stopped = false;
         this.on('ready', this.onReady.bind(this));
         this.on('unload', this.onUnload.bind(this));
         this.timetableDate = new Date();
@@ -46,6 +48,10 @@ class Webuntis extends utils.Adapter {
      * Is called when databases are connected and adapter received configuration.
      */
     async onReady() {
+        void this.pollWeeklyTimetables();
+        if (!this.config.baseUrl && !this.config.school && this.config.accounts_json) {
+            return;
+        }
         if (this.config.baseUrl == '') {
             this.log.error('No baseUrl set');
         }
@@ -117,11 +123,126 @@ class Webuntis extends utils.Adapter {
      */
     onUnload(callback) {
         try {
+            this.stopped = true;
+            this.clearTimeout(this.weeklyTimeout);
             callback();
             this.clearTimeout(this.startHourScheduleTimeout);
         }
         catch (e) {
             callback();
+        }
+    }
+    async pollWeeklyTimetables() {
+        try {
+            const accounts = [];
+            if (this.config.school && this.config.baseUrl &&
+                (this.config.anonymous ? this.config.class : this.config.username && this.config.client_secret)) {
+                accounts.push({
+                    id: 'primary', school: this.config.school, baseUrl: this.config.baseUrl,
+                    username: this.config.username, password: this.config.client_secret,
+                    anonymous: this.config.anonymous, className: this.config.class,
+                });
+            }
+            const hasPrimary = accounts.length > 0;
+            if (this.config.accounts_json) {
+                try {
+                    const extra = JSON.parse(this.config.accounts_json);
+                    if (!Array.isArray(extra))
+                        throw new Error('Expected an array');
+                    for (const account of extra) {
+                        if (!account || typeof account.id !== 'string' || !/^[a-zA-Z0-9_-]+$/.test(account.id) ||
+                            typeof account.school !== 'string' || !account.school.trim() ||
+                            typeof account.baseUrl !== 'string' || !account.baseUrl.trim() ||
+                            typeof account.username !== 'string' || !account.username.trim() ||
+                            typeof account.password !== 'string' || !account.password ||
+                            account.id === 'primary' || accounts.some(existing => existing.id === account.id)) {
+                            this.log.error('Ignoring invalid or duplicate additional account');
+                            continue;
+                        }
+                        accounts.push({
+                            id: account.id, school: account.school, baseUrl: account.baseUrl,
+                            username: account.username, password: account.password,
+                        });
+                    }
+                }
+                catch (_error) {
+                    this.log.error('Additional accounts configuration is invalid');
+                }
+            }
+            let allConnected = accounts.length > 0;
+            for (const account of accounts) {
+                if (this.stopped)
+                    break;
+                try {
+                    if (!await this.updateWeeklyTimetable(account))
+                        allConnected = false;
+                }
+                catch (_error) {
+                    allConnected = false;
+                    this.log.error(`Unable to initialize weekly timetable for account ${account.id}`);
+                }
+            }
+            if (!hasPrimary && !this.stopped)
+                await this.setStateAsync('info.connection', allConnected, true);
+        }
+        catch (_error) {
+            this.log.error('Unable to update weekly timetables');
+        }
+        finally {
+            if (!this.stopped) {
+                this.weeklyTimeout = this.setTimeout(() => void this.pollWeeklyTimetables(), this.getMillisecondsToNextFullHour());
+            }
+        }
+    }
+    async updateWeeklyTimetable(account) {
+        const prefix = `accounts.${account.id}`;
+        for (const [name, type, role] of [
+            ['timetable', 'string', 'json'],
+            ['connection', 'boolean', 'indicator.connected'],
+            ['lastUpdated', 'number', 'value.time'],
+        ]) {
+            await this.setObjectNotExistsAsync(`${prefix}.${name}`, {
+                type: 'state', common: { name, type, role, read: true, write: false }, native: {},
+            });
+        }
+        const untis = account.anonymous
+            ? new webuntis_1.default.WebUntisAnonymousAuth(account.school, account.baseUrl)
+            : new webuntis_1.default(account.school, account.username || '', account.password || '', account.baseUrl);
+        untis.axios.defaults.timeout = 15000;
+        let loggedIn = false;
+        try {
+            await untis.login();
+            loggedIn = true;
+            const dates = (0, week_1.getWeekDates)(new Date());
+            let lessons;
+            if (account.anonymous) {
+                const classes = await untis.getClasses();
+                const schoolClass = classes.find(item => item.name === account.className);
+                if (!schoolClass)
+                    throw new Error('Class not found');
+                lessons = await untis.getTimetableForRange(dates[0], dates[6], schoolClass.id, webuntis_1.default.TYPES.CLASS);
+            }
+            else {
+                lessons = await untis.getOwnTimetableForRange(dates[0], dates[6]);
+            }
+            const formatDate = (date) => [date.getFullYear(),
+                String(date.getMonth() + 1).padStart(2, '0'), String(date.getDate()).padStart(2, '0')].join('-');
+            await this.setStateAsync(`${prefix}.timetable`, JSON.stringify({
+                startDate: formatDate(dates[0]), endDate: formatDate(dates[6]), lessons,
+            }), true);
+            await this.setStateAsync(`${prefix}.lastUpdated`, Date.now(), true);
+            await this.setStateAsync(`${prefix}.connection`, true, true);
+            return true;
+        }
+        catch (_error) {
+            this.log.error(`Unable to update weekly timetable for account ${account.id}`);
+            await this.setStateAsync(`${prefix}.connection`, false, true);
+            return false;
+        }
+        finally {
+            if (loggedIn) {
+                await untis.logout().catch(() => this.log.debug(`Unable to close session for account ${account.id}`));
+            }
         }
     }
     startHourSchedule() {

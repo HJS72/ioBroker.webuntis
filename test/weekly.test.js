@@ -58,10 +58,23 @@ describe('weekly timetable polling', () => {
         assert.equal(client.axios.defaults.timeout, 15000);
     });
 
+    it('normalizes the primary account URL before legacy and weekly logins', async () => {
+        FakeUntis.failures.add('one');
+        const adapter = createAdapter({ config: {
+            anonymous: false, school: 'School', username: 'one', client_secret: 'secret',
+            baseUrl: 'https://hepta.webuntis.com/WebUntis/?school=School', accounts_json: '',
+        } });
+        await adapter.onReady();
+        await new Promise(resolve => setImmediate(resolve));
+        assert.equal(adapter.config.baseUrl, 'hepta.webuntis.com');
+        assert.equal(FakeUntis.sessions.length, 2);
+        assert(FakeUntis.sessions.every(session => session.baseUrl === 'hepta.webuntis.com'));
+    });
+
     it('isolates accounts, retries failures, and preserves last successful data', async () => {
         const accounts = [
             { id: 'kid1', username: 'one', password: 'secret1', school: 'School 1', baseUrl: 'one.webuntis.com' },
-            { id: 'kid2', username: 'two', password: 'secret2', school: 'School 2', baseUrl: 'two.webuntis.com' },
+            { id: 'kid2', username: 'two', password: 'secret2', school: 'School 2', baseUrl: 'https://two.webuntis.com/WebUntis/?school=School%202' },
         ];
         const adapter = createAdapter({ config: { school: '', baseUrl: '', accounts_json: JSON.stringify(accounts) } });
         FakeUntis.failures.add('one');
@@ -71,6 +84,7 @@ describe('weekly timetable polling', () => {
         assert.equal(adapter.states['info.connection'], false);
         assert.equal(JSON.parse(adapter.states['accounts.kid2.timetable']).lessons[0].subject, 'two');
         assert.equal(FakeUntis.sessions[1].school, 'School 2');
+        assert.equal(FakeUntis.sessions[1].baseUrl, 'two.webuntis.com');
         assert.equal(FakeUntis.sessions[1].axios.defaults.timeout, 15000);
         assert.equal(FakeUntis.sessions[1].loggedOut, true);
         assert.equal(adapter.timers.length, 1);

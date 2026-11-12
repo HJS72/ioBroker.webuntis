@@ -30,6 +30,7 @@ Object.defineProperty(exports, "__esModule", { value: true });
 const utils = __importStar(require("@iobroker/adapter-core"));
 const webuntis_1 = __importDefault(require("webuntis"));
 const week_1 = require("./week");
+const host_1 = require("./host");
 // Load your modules here, e.g.:
 // import * as fs from "fs";
 class Webuntis extends utils.Adapter {
@@ -48,6 +49,15 @@ class Webuntis extends utils.Adapter {
      * Is called when databases are connected and adapter received configuration.
      */
     async onReady() {
+        if (this.config.baseUrl) {
+            try {
+                this.config.baseUrl = (0, host_1.getWebUntisHost)(this.config.baseUrl);
+            }
+            catch (_error) {
+                this.log.error('Invalid school base URL: enter a hostname or HTTPS URL');
+                this.config.baseUrl = '';
+            }
+        }
         void this.pollWeeklyTimetables();
         if (!this.config.baseUrl && !this.config.school && this.config.accounts_json) {
             return;
@@ -205,12 +215,14 @@ class Webuntis extends utils.Adapter {
                 type: 'state', common: { name, type, role, read: true, write: false }, native: {},
             });
         }
-        const untis = account.anonymous
-            ? new webuntis_1.default.WebUntisAnonymousAuth(account.school, account.baseUrl)
-            : new webuntis_1.default(account.school, account.username || '', account.password || '', account.baseUrl);
-        untis.axios.defaults.timeout = 15000;
+        let untis;
         let loggedIn = false;
         try {
+            const baseUrl = (0, host_1.getWebUntisHost)(account.baseUrl);
+            untis = account.anonymous
+                ? new webuntis_1.default.WebUntisAnonymousAuth(account.school, baseUrl)
+                : new webuntis_1.default(account.school, account.username || '', account.password || '', baseUrl);
+            untis.axios.defaults.timeout = 15000;
             await untis.login();
             loggedIn = true;
             const dates = (0, week_1.getWeekDates)(new Date());
@@ -240,7 +252,7 @@ class Webuntis extends utils.Adapter {
             return false;
         }
         finally {
-            if (loggedIn) {
+            if (loggedIn && untis) {
                 await untis.logout().catch(() => this.log.debug(`Unable to close session for account ${account.id}`));
             }
         }

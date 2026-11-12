@@ -37,6 +37,9 @@ see the example below the previous screenshot: [here](https://hepta.webuntis.com
 - hepta.webuntis.com    => the schoolbase-URL
 - hbs-F%C3%BCrth        => the school-secret
 
+The school base URL accepts either the hostname (for example `hepta.webuntis.com`)
+or the full HTTPS WebUntis login URL. Enter the school secret separately.
+
 **If in school-secret is a __+__ , then you must replace this character with a blank space**
 
 now go to the configuration-window in iobroker

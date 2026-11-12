@@ -5,7 +5,7 @@
 // The adapter-core module gives you access to the core ioBroker functions
 // you need to create an adapter
 import * as utils from '@iobroker/adapter-core';
-import APIWebUntis, { Inbox, Lesson, NewsWidget } from 'webuntis';
+import APIWebUntis, { Exam, Inbox, Lesson, NewsWidget } from 'webuntis';
 import { getWeekDates } from './week';
 import { getWebUntisHost } from './host';
 
@@ -75,7 +75,6 @@ class Webuntis extends utils.Adapter {
                         }).catch(async error => {
                             this.log.error(error);
                             this.log.error('Login WebUntis failed');
-                            await this.setStateAsync('info.connection', false, true)
                         });
 
                         if(this.class_id > 0) {
@@ -107,7 +106,6 @@ class Webuntis extends utils.Adapter {
                     }).catch(async error => {
                         this.log.error(error);
                         this.log.error('Login WebUntis failed');
-                        await this.setStateAsync('info.connection', false, true)
                     });
                 }
             }
@@ -163,42 +161,102 @@ class Webuntis extends utils.Adapter {
                 ? new APIWebUntis.WebUntisAnonymousAuth(this.config.school, baseUrl)
                 : new APIWebUntis(this.config.school, this.config.username, this.config.client_secret, baseUrl);
             (untis as unknown as { axios: { defaults: { timeout: number } } }).axios.defaults.timeout = 15000;
-            await untis.login();
+            const session = await untis.login();
             loggedIn = true;
-            const dates = getWeekDates(new Date());
-            let lessons: Lesson[];
+            let classId = session?.klasseId || -1;
             if (this.config.anonymous) {
                 const classes = await untis.getClasses();
                 const schoolClass = classes.find(item => item.name === this.config.class);
                 if (!schoolClass) throw new Error('Class not found');
-                lessons = await untis.getTimetableForRange(dates[0], dates[4], schoolClass.id, APIWebUntis.TYPES.CLASS);
-            } else {
-                lessons = await untis.getOwnTimetableForRange(dates[0], dates[4]);
+                classId = schoolClass.id;
             }
             const formatDate = (date: Date): string => [date.getFullYear(),
                 String(date.getMonth() + 1).padStart(2, '0'), String(date.getDate()).padStart(2, '0')].join('-');
-            const days = dates.map(date => {
-                const untisDate = date.getFullYear() * 10000 + (date.getMonth() + 1) * 100 + date.getDate();
-                return {
-                    date: formatDate(date),
-                    lessons: lessons.filter(lesson => lesson.date === untisDate).sort((first, second) => first.startTime - second.startTime),
-                };
-            });
-            await this.setStateAsync(`${prefix}.timetable`, JSON.stringify({
-                startDate: formatDate(dates[0]), endDate: formatDate(dates[4]),
-                lessons: days.reduce((all: Lesson[], day) => all.concat(day.lessons), []),
-            }), true);
-            for (const [index, day] of days.entries()) {
-                await this.setStateAsync(`${prefix}.${weekDayNames[index]}`, JSON.stringify(day), true);
+            const existing = await this.getObjectAsync('timetable');
+            if (existing && existing.native.webuntisAccountId !== 'primary') {
+                throw new Error('Timetable object already exists');
             }
-            await this.writeLessonStates(days);
-            await this.removeLegacyAccountTimetables();
-            await this.setStateAsync(`${prefix}.lastUpdated`, Date.now(), true);
-            await this.setStateAsync(`${prefix}.connection`, true, true);
-            await this.setStateAsync('info.connection', true, true);
-            return true;
+            await this.setObjectNotExistsAsync('timetable', {
+                type: 'channel', common: { name: 'Timetable' }, native: { webuntisAccountId: 'primary' },
+            });
+            const referenceDate = new Date();
+            let allWeeksUpdated = true;
+            for (const [weekOffset, weekName] of ['this_week', 'next_week'].entries()) {
+                const weekPrefix = `timetable.${weekName}`;
+                await this.setObjectNotExistsAsync(weekPrefix, {
+                    type: 'channel', common: { name: weekName }, native: { webuntisAccountId: 'primary' },
+                });
+                for (const [name, type, role] of [
+                    ['connection', 'boolean', 'indicator.connected'], ['lastUpdated', 'number', 'value.time'],
+                    ['examsAvailable', 'boolean', 'indicator'],
+                ] as const) {
+                    await this.setObjectNotExistsAsync(`${weekPrefix}.${name}`, {
+                        type: 'state', common: { name, type, role, read: true, write: false }, native: {},
+                    });
+                }
+                try {
+                    const dates = getWeekDates(referenceDate, weekOffset);
+                    const lessons = this.config.anonymous
+                        ? await untis.getTimetableForRange(dates[0], dates[4], classId, APIWebUntis.TYPES.CLASS)
+                        : await untis.getOwnTimetableForRange(dates[0], dates[4]);
+                    let exams: Exam[] | null = null;
+                    try {
+                        const result = await untis.getExamsForRange(dates[0], dates[4], classId, false);
+                        if (!Array.isArray(result) || result.some(exam => !exam || !Number.isInteger(exam.examDate) ||
+                            !Number.isInteger(exam.startTime) || !Number.isInteger(exam.endTime) || exam.startTime < 0 ||
+                            exam.endTime > 2359 || exam.startTime % 100 >= 60 || exam.endTime % 100 >= 60 || exam.startTime >= exam.endTime)) {
+                            throw new Error('Invalid exam data');
+                        }
+                        exams = result;
+                    } catch (_error) {
+                        this.log.info(`Exam data unavailable for ${weekName}`);
+                    }
+                    const days = dates.map(date => {
+                        const untisDate = date.getFullYear() * 10000 + (date.getMonth() + 1) * 100 + date.getDate();
+                        return {
+                            date: formatDate(date),
+                            lessons: lessons.filter(lesson => lesson.date === untisDate).sort((first, second) => first.startTime - second.startTime),
+                        };
+                    });
+                    await this.writeLessonStates(weekName, days, exams);
+                    if (weekOffset === 0) {
+                        await this.setStateAsync(`${prefix}.timetable`, JSON.stringify({
+                            startDate: formatDate(dates[0]), endDate: formatDate(dates[4]),
+                            lessons: days.reduce((all: Lesson[], day) => all.concat(day.lessons), []),
+                        }), true);
+                        for (const [index, day] of days.entries()) {
+                            await this.setStateAsync(`${prefix}.${weekDayNames[index]}`, JSON.stringify(day), true);
+                        }
+                        for (const dayName of weekDayNames) {
+                            const oldPath = `timetable.${dayName}`;
+                            const oldObject = await this.getObjectAsync(oldPath);
+                            if (oldObject?.native?.webuntisAccountId === 'primary') {
+                                await this.delObjectAsync(oldPath, { recursive: true });
+                            }
+                        }
+                        await this.removeLegacyAccountTimetables();
+                    }
+                    await this.setStateAsync(`${weekPrefix}.lastUpdated`, Date.now(), true);
+                    await this.setStateAsync(`${weekPrefix}.examsAvailable`, exams !== null, true);
+                    await this.setStateAsync(`${weekPrefix}.connection`, true, true);
+                } catch (_error) {
+                    allWeeksUpdated = false;
+                    this.log.error(`Unable to update timetable ${weekName}`);
+                    await this.setStateAsync(`${weekPrefix}.connection`, false, true);
+                }
+            }
+            if (allWeeksUpdated) await this.setStateAsync(`${prefix}.lastUpdated`, Date.now(), true);
+            await this.setStateAsync(`${prefix}.connection`, allWeeksUpdated, true);
+            await this.setStateAsync('info.connection', allWeeksUpdated, true);
+            return allWeeksUpdated;
         } catch (_error) {
             this.log.error('Unable to update weekly timetable');
+            for (const weekName of ['this_week', 'next_week']) {
+                const week = await this.getObjectAsync(`timetable.${weekName}`);
+                if (week?.native?.webuntisAccountId === 'primary') {
+                    await this.setStateAsync(`timetable.${weekName}.connection`, false, true);
+                }
+            }
             await this.setStateAsync(`${prefix}.connection`, false, true);
             await this.setStateAsync('info.connection', false, true);
             return false;
@@ -230,16 +288,9 @@ class Webuntis extends utils.Adapter {
         }
     }
 
-    private async writeLessonStates(days: { date: string; lessons: Lesson[] }[]): Promise<void> {
-        const existing = await this.getObjectAsync('timetable');
-        if (existing && existing.native.webuntisAccountId !== 'primary') {
-            throw new Error('Timetable object already exists');
-        }
-        await this.setObjectNotExistsAsync('timetable', {
-            type: 'channel', common: { name: 'Timetable' }, native: { webuntisAccountId: 'primary' },
-        });
+    private async writeLessonStates(weekName: string, days: { date: string; lessons: Lesson[] }[], exams: Exam[] | null): Promise<void> {
         for (const [dayIndex, day] of days.entries()) {
-            const dayPrefix = `timetable.${weekDayNames[dayIndex]}`;
+            const dayPrefix = `timetable.${weekName}.${weekDayNames[dayIndex]}`;
             await this.setObjectNotExistsAsync(dayPrefix, {
                 type: 'channel', common: { name: weekDayNames[dayIndex] }, native: { webuntisAccountId: 'primary' },
             });
@@ -260,6 +311,29 @@ class Webuntis extends utils.Adapter {
                 for (const [name, value] of Object.entries(values)) {
                     await this.setObjectNotExistsAsync(`${lessonPrefix}.${name}`, {
                         type: 'state', common: { name, type: 'string', role: 'text', read: true, write: false }, native: {},
+                    });
+                    await this.setStateAsync(`${lessonPrefix}.${name}`, value, true);
+                }
+                const matchingExams = exams?.filter(exam => exam.examDate === lesson.date &&
+                    exam.startTime < lesson.endTime && exam.endTime > lesson.startTime);
+                const subjects = (lesson.su || []).reduce((names: string[], subject) => names.concat([subject.name, subject.longname]), [])
+                    .filter((name): name is string => typeof name === 'string' && !!name.trim())
+                    .map(name => name.trim().toLowerCase());
+                const validLessonTime = Number.isInteger(lesson.startTime) && Number.isInteger(lesson.endTime) &&
+                    lesson.startTime >= 0 && lesson.endTime <= 2359 && lesson.startTime % 100 < 60 &&
+                    lesson.endTime % 100 < 60 && lesson.startTime < lesson.endTime;
+                const isTest = matchingExams?.some(exam => typeof exam.subject === 'string' &&
+                    subjects.includes(exam.subject.trim().toLowerCase()));
+                const uncertainTest = matchingExams?.some(exam => !subjects.length ||
+                    typeof exam.subject !== 'string' || !exam.subject.trim());
+                const flags: Record<string, boolean | null> = {
+                    CANCELLED: lesson.code === 'cancelled',
+                    TEST: exams === null || !validLessonTime ? null : isTest ? true : uncertainTest ? null : false,
+                    CHANGES: lesson.code === 'irregular' || !!lesson.substText?.trim(),
+                };
+                for (const [name, value] of Object.entries(flags)) {
+                    await this.setObjectNotExistsAsync(`${lessonPrefix}.${name}`, {
+                        type: 'state', common: { name, type: 'boolean', role: 'indicator', read: true, write: false }, native: {},
                     });
                     await this.setStateAsync(`${lessonPrefix}.${name}`, value, true);
                 }
@@ -301,7 +375,6 @@ class Webuntis extends utils.Adapter {
 
             untis.login().then(async () => {
                 this.log.debug('WebUntis Login erfolgreich')
-                await this.setStateAsync('info.connection', true, true);
                 this.log.debug('Load Message center');
                 //get Messages from Center
                 untis.getNewsWidget(new Date()).then( (newsFeed) => {
@@ -325,7 +398,6 @@ class Webuntis extends utils.Adapter {
             }).catch(async error => {
                 this.log.error(error);
                 this.log.error('Login WebUntis failed');
-                await this.setStateAsync('info.connection', false, true)
             });
         }
         // Next round in one Hour

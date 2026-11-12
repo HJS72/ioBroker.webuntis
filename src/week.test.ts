@@ -29,4 +29,14 @@ describe('getWeekDates', () => {
         assert.deepEqual(dates.map(date => date.getDate()), [25, 26, 27, 28, 29]);
         assert(dates.every(date => date.getHours() === 0));
     });
+
+    it('calculates next week across year and daylight-saving boundaries', () => {
+        const newYear = getWeekDates(new Date(2023, 11, 31), 1);
+        assert.deepEqual(newYear.map(date => [date.getFullYear(), date.getMonth(), date.getDate()]), [
+            [2024, 0, 1], [2024, 0, 2], [2024, 0, 3], [2024, 0, 4], [2024, 0, 5],
+        ]);
+        const daylightSaving = getWeekDates(new Date(2024, 2, 30), 1);
+        assert.deepEqual(daylightSaving.map(date => date.getDate()), [1, 2, 3, 4, 5]);
+        assert(daylightSaving.every(date => date.getHours() === 0));
+    });
 });

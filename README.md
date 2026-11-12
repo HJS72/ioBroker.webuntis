@@ -61,14 +61,23 @@ and the WebUntis `lessons` array for the current local Monday through Friday.
 The states `accounts.primary.montag`, `.dienstag`, `.mittwoch`, `.donnerstag`
 and `.freitag` each contain JSON with `date` and that day's `lessons`, sorted
 by start time. Days without lessons have an empty array.
-Individual states are available at `timetable.<day>.<lesson>`,
-for example `webuntis.0.timetable.montag.1.START`. Lessons are numbered
+Individual states are available at `timetable.this_week.<day>.<lesson>` and
+`timetable.next_week.<day>.<lesson>`, for example
+`webuntis.0.timetable.this_week.montag.1.START`. Lessons are numbered
 from 1 in start-time order. Each has `START` and `END` (`HH:MM`), `FACH`,
 `ORT`, `LEHRER`, `STATUS`, `INFO` and `VERTRETUNG`. Each day has `DATUM`
 and `ANZAHL` states. Multiple subjects, rooms or teachers are comma-separated.
+Each lesson also has boolean `CANCELLED`, `TEST` and `CHANGES` states.
+`CANCELLED` reflects WebUntis's cancellation code; `CHANGES` reflects its
+irregular code or substitution text. `TEST` is matched with the exams API by
+date, overlapping time and subject; matching may depend on school data. It is
+`null` when exam access or matching information is unavailable. Each week has
+`examsAvailable`, `connection` and `lastUpdated` states; a failed refresh leaves
+that week's last successful timetable in place.
 The legacy `0` and `1` daily timetable branches are removed when the instance
 starts. Old adapter-created username timetable branches are removed after a
-successful refresh; unrelated objects are retained.
+successful refresh; unrelated objects are retained. The former direct weekday
+branches below `timetable` are removed after the current week is refreshed.
 Dates and lesson fields come from WebUntis. The `connection` and `lastUpdated`
 states indicate whether the last refresh succeeded and when data was last updated.
 On failure the last successful timetable remains available; check `connection`

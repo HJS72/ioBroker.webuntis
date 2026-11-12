@@ -43,13 +43,15 @@ class FakeUntis {
         this.axios = { defaults: {} };
         FakeUntis.sessions.push(this);
     }
-    async login() { if (FakeUntis.failures.has(this.username)) throw new Error('login failed'); }
+    async login() { if (FakeUntis.failures.has(this.username)) throw new Error('login failed'); return { klasseId: 42 }; }
     async logout() { this.loggedOut = true; }
     async getOwnTimetableFor() { this.legacyRequests = (this.legacyRequests || 0) + 1; return []; }
     async getNewsWidget() { return { messagesOfDay: [] }; }
     async getInbox() { return { incomingMessages: [] }; }
     async getOwnTimetableForRange(start, end) {
-        this.range = [start, end];
+        this.range = this.range || [start, end];
+        this.ranges = (this.ranges || []).concat([[start, end]]);
+        if (FakeUntis.failedWeek === this.ranges.length - 1) throw new Error('timetable unavailable');
         if (FakeUntis.empty.has(this.username)) return [];
         const dateAt = offset => {
             const date = new Date(start);
@@ -57,8 +59,8 @@ class FakeUntis {
             return date.getFullYear() * 10000 + (date.getMonth() + 1) * 100 + date.getDate();
         };
         return [
-            { date: dateAt(0), startTime: 1000, endTime: 1045, subject: this.username },
-            { date: dateAt(4), startTime: 900, subject: this.username },
+            { date: dateAt(0), startTime: 1000, endTime: 1045, subject: this.username, substText: 'Room change' },
+            { date: dateAt(4), startTime: 900, endTime: 945, subject: this.username, code: 'cancelled' },
             { date: dateAt(0), startTime: 800, endTime: 845, subject: this.username,
                 su: [{ name: 'Mathe' }, { name: 'Physik' }], ro: [{ name: 'A101' }],
                 te: [{ name: 'AB', longname: 'Lehrer Eins' }], code: 'irregular', info: 'Test' },
@@ -66,14 +68,25 @@ class FakeUntis {
         ];
     }
     async getClasses() { return [{ id: 42, name: '5A' }]; }
+    async getExamsForRange(start, end, classId, withGrades) {
+        this.examRanges = (this.examRanges || []).concat([[start, end, classId, withGrades]]);
+        if (FakeUntis.examFailures.has(this.username)) throw new Error('exam access denied');
+        const examDate = start.getFullYear() * 10000 + (start.getMonth() + 1) * 100 + start.getDate();
+        if (FakeUntis.examMode === 'invalid') return [{ examDate, startTime: 'invalid', endTime: 845 }];
+        return [{ examDate, startTime: 800, endTime: 845, subject: FakeUntis.examMode === 'missingSubject' ? '' : 'Mathe' }];
+    }
     async getTimetableForRange(start, end, id, type) {
-        this.range = [start, end, id, type];
+        this.range = this.range || [start, end, id, type];
+        this.ranges = (this.ranges || []).concat([[start, end, id, type]]);
         return [];
     }
 }
 FakeUntis.sessions = [];
 FakeUntis.failures = new Set();
 FakeUntis.empty = new Set();
+FakeUntis.examFailures = new Set();
+FakeUntis.failedWeek = -1;
+FakeUntis.examMode = '';
 FakeUntis.TYPES = { CLASS: 1 };
 FakeUntis.WebUntisAnonymousAuth = class extends FakeUntis {
     constructor(school, baseUrl) { super(school, '', '', baseUrl); }
@@ -85,7 +98,10 @@ const createAdapter = proxyquire('../build/main', {
 });
 
 describe('weekly timetable polling', () => {
-    beforeEach(() => { FakeUntis.sessions = []; FakeUntis.failures.clear(); FakeUntis.empty.clear(); });
+    beforeEach(() => {
+        FakeUntis.sessions = []; FakeUntis.failures.clear(); FakeUntis.empty.clear(); FakeUntis.examFailures.clear();
+        FakeUntis.failedWeek = -1; FakeUntis.examMode = '';
+    });
 
     it('removes additional-account controls while protecting old credentials', () => {
         const html = fs.readFileSync('admin/index_m.html', 'utf8');
@@ -167,7 +183,7 @@ describe('weekly timetable polling', () => {
         await new Promise(resolve => setImmediate(resolve));
         assert(FakeUntis.sessions.every(session => !session.legacyRequests));
         assert(!Object.keys(adapter.objects).some(id => id.startsWith('0.') || id.startsWith('1.')));
-        assert.equal(adapter.states['timetable.montag.1.FACH'], 'Mathe, Physik');
+        assert.equal(adapter.states['timetable.this_week.montag.1.FACH'], 'Mathe, Physik');
     });
 
     it('retries failures and preserves the last successful timetable', async () => {
@@ -198,33 +214,51 @@ describe('weekly timetable polling', () => {
         assert.equal(JSON.parse(adapter.states['accounts.primary.mittwoch']).lessons.length, 0);
         assert.equal(JSON.parse(adapter.states['accounts.primary.montag']).date, payload.startDate);
         assert.equal(JSON.parse(adapter.states['accounts.primary.freitag']).date, payload.endDate);
-        assert.equal(adapter.states['timetable.montag.1.START'], '08:00');
-        assert.equal(adapter.states['timetable.montag.1.END'], '08:45');
-        assert.equal(adapter.states['timetable.montag.1.FACH'], 'Mathe, Physik');
-        assert.equal(adapter.states['timetable.montag.1.ORT'], 'A101');
-        assert.equal(adapter.states['timetable.montag.1.LEHRER'], 'Lehrer Eins');
-        assert.equal(adapter.states['timetable.montag.1.STATUS'], 'irregular');
-        assert.equal(adapter.states['timetable.montag.1.INFO'], 'Test');
-        assert.equal(adapter.states['timetable.montag.2.FACH'], '');
-        assert.equal(adapter.states['timetable.montag.ANZAHL'], 2);
-        assert.equal(adapter.states['timetable.dienstag.ANZAHL'], 0);
+        assert.equal(adapter.states['timetable.this_week.montag.1.START'], '08:00');
+        assert.equal(adapter.states['timetable.this_week.montag.1.END'], '08:45');
+        assert.equal(adapter.states['timetable.this_week.montag.1.FACH'], 'Mathe, Physik');
+        assert.equal(adapter.states['timetable.this_week.montag.1.ORT'], 'A101');
+        assert.equal(adapter.states['timetable.this_week.montag.1.LEHRER'], 'Lehrer Eins');
+        assert.equal(adapter.states['timetable.this_week.montag.1.STATUS'], 'irregular');
+        assert.equal(adapter.states['timetable.this_week.montag.1.INFO'], 'Test');
+        assert.equal(adapter.states['timetable.this_week.montag.1.CANCELLED'], false);
+        assert.equal(adapter.states['timetable.this_week.montag.1.TEST'], true);
+        assert.equal(adapter.states['timetable.this_week.montag.1.CHANGES'], true);
+        assert.equal(adapter.states['timetable.this_week.montag.2.TEST'], false);
+        assert.equal(adapter.states['timetable.this_week.montag.2.CHANGES'], true);
+        assert.equal(adapter.states['timetable.this_week.freitag.1.CANCELLED'], true);
+        assert.equal(adapter.states['timetable.next_week.montag.1.TEST'], true);
+        assert.equal(adapter.states['timetable.this_week.examsAvailable'], true);
+        assert.equal(session.examRanges[0][2], 42);
+        assert.equal(session.examRanges[0][3], false);
+        assert.equal(adapter.states['timetable.this_week.montag.2.FACH'], '');
+        assert.equal(adapter.states['timetable.this_week.montag.ANZAHL'], 2);
+        assert.equal(adapter.states['timetable.this_week.dienstag.ANZAHL'], 0);
+        assert.equal(adapter.states['timetable.next_week.montag.1.FACH'], 'Mathe, Physik');
+        assert.equal(session.ranges.length, 2);
+        assert.equal(session.ranges[1][0].getDay(), 1);
+        assert.equal(session.ranges[1][1].getDay(), 5);
+        assert.equal(session.ranges[1][0].getTime(), new Date(session.ranges[0][0].getFullYear(), session.ranges[0][0].getMonth(), session.ranges[0][0].getDate() + 7).getTime());
 
         const previousMonday = adapter.states['accounts.primary.montag'];
         FakeUntis.failures.add('one');
         await adapter.pollWeeklyTimetables();
         assert.equal(adapter.states['accounts.primary.connection'], false);
+        assert.equal(adapter.states['timetable.this_week.connection'], false);
+        assert.equal(adapter.states['timetable.next_week.connection'], false);
         assert.equal(adapter.states['accounts.primary.timetable'], previous);
         assert.equal(adapter.states['accounts.primary.montag'], previousMonday);
-        assert.equal(adapter.states['timetable.montag.1.FACH'], 'Mathe, Physik');
+        assert.equal(adapter.states['timetable.this_week.montag.1.FACH'], 'Mathe, Physik');
 
         FakeUntis.failures.clear();
         FakeUntis.empty.add('one');
         await adapter.pollWeeklyTimetables();
         assert.deepEqual(JSON.parse(adapter.states['accounts.primary.montag']).lessons, []);
         assert.deepEqual(JSON.parse(adapter.states['accounts.primary.freitag']).lessons, []);
-        assert.equal(adapter.states['timetable.montag.ANZAHL'], 0);
-        assert.equal(adapter.states['timetable.montag.1.FACH'], undefined);
-        assert.equal(adapter.objects['timetable.montag.2'], undefined);
+        assert.equal(adapter.states['timetable.this_week.montag.ANZAHL'], 0);
+        assert.equal(adapter.states['timetable.this_week.montag.1.FACH'], undefined);
+        assert.equal(adapter.objects['timetable.this_week.montag.2'], undefined);
+        assert.equal(adapter.states['timetable.next_week.montag.ANZAHL'], 0);
     });
 
     it('supports an anonymous class', async () => {
@@ -237,7 +271,84 @@ describe('weekly timetable polling', () => {
         assert.equal(FakeUntis.sessions[0].range[1].getDay(), 5);
         assert.deepEqual(JSON.parse(adapter.states['accounts.primary.dienstag']).lessons, []);
         assert.equal(FakeUntis.sessions.length, 1);
-        assert.equal(adapter.states['timetable.dienstag.ANZAHL'], 0);
+        assert.equal(adapter.states['timetable.this_week.dienstag.ANZAHL'], 0);
+        assert.equal(adapter.states['timetable.next_week.dienstag.ANZAHL'], 0);
+    });
+
+    it('marks tests unknown without exam permission and still updates both weeks', async () => {
+        const adapter = createAdapter({ config: {
+            anonymous: false, school: 'S', baseUrl: 'host', username: 'one', client_secret: 'secret',
+        } });
+        FakeUntis.examFailures.add('one');
+        await adapter.pollWeeklyTimetables();
+        assert.equal(adapter.states['timetable.this_week.montag.1.TEST'], null);
+        assert.equal(adapter.states['timetable.next_week.montag.1.TEST'], null);
+        assert.equal(adapter.states['timetable.this_week.examsAvailable'], false);
+        assert.equal(adapter.states['timetable.next_week.examsAvailable'], false);
+        assert.equal(adapter.states['timetable.this_week.connection'], true);
+        assert.equal(adapter.states['timetable.next_week.connection'], true);
+    });
+
+    it('marks ambiguous or malformed exam data unknown', async () => {
+        const adapter = createAdapter({ config: {
+            anonymous: false, school: 'S', baseUrl: 'host', username: 'one', client_secret: 'secret',
+        } });
+        FakeUntis.examMode = 'missingSubject';
+        await adapter.pollWeeklyTimetables();
+        assert.equal(adapter.states['timetable.this_week.montag.1.TEST'], null);
+        assert.equal(adapter.states['timetable.this_week.examsAvailable'], true);
+        FakeUntis.examMode = 'invalid';
+        await adapter.pollWeeklyTimetables();
+        assert.equal(adapter.states['timetable.this_week.montag.1.TEST'], null);
+        assert.equal(adapter.states['timetable.this_week.examsAvailable'], false);
+    });
+
+    it('keeps failed week data while updating the other week', async () => {
+        const adapter = createAdapter({ config: {
+            anonymous: false, school: 'S', baseUrl: 'host', username: 'one', client_secret: 'secret',
+        } });
+        await adapter.pollWeeklyTimetables();
+        const previousNextWeek = adapter.states['timetable.next_week.montag.1.FACH'];
+        FakeUntis.failedWeek = 1;
+        FakeUntis.empty.add('one');
+        await adapter.pollWeeklyTimetables();
+        assert.equal(adapter.states['timetable.this_week.montag.ANZAHL'], 0);
+        assert.equal(adapter.states['timetable.this_week.connection'], true);
+        assert.equal(adapter.states['timetable.next_week.connection'], false);
+        assert.equal(adapter.states['timetable.next_week.montag.1.FACH'], previousNextWeek);
+        assert.equal(adapter.states['accounts.primary.connection'], false);
+    });
+
+    it('does not let news login mask a failed week', async () => {
+        const adapter = createAdapter({ config: {
+            anonymous: false, school: 'S', baseUrl: 'host', username: 'one', client_secret: 'secret',
+        } });
+        FakeUntis.failedWeek = 1;
+        await adapter.onReady();
+        await new Promise(resolve => setImmediate(resolve));
+        assert.equal(adapter.states['timetable.this_week.connection'], true);
+        assert.equal(adapter.states['timetable.next_week.connection'], false);
+        assert.equal(adapter.states['info.connection'], false);
+    });
+
+    it('moves old weekdays only after the current week succeeds', async () => {
+        const adapter = createAdapter({ config: {
+            anonymous: false, school: 'S', baseUrl: 'host', username: 'one', client_secret: 'secret',
+        } });
+        adapter.objects.timetable = { type: 'channel', native: { webuntisAccountId: 'primary' } };
+        adapter.objects['timetable.montag'] = { type: 'channel', native: { webuntisAccountId: 'primary' } };
+        adapter.objects['timetable.montag.1.FACH'] = { type: 'state', native: {} };
+        adapter.states['timetable.montag.1.FACH'] = 'old';
+        adapter.objects['timetable.dienstag'] = { type: 'channel', native: { owner: 'other' } };
+        FakeUntis.failedWeek = 0;
+        await adapter.pollWeeklyTimetables();
+        assert.equal(adapter.states['timetable.montag.1.FACH'], 'old');
+        assert.equal(adapter.states['timetable.next_week.connection'], true);
+        FakeUntis.failedWeek = -1;
+        await adapter.pollWeeklyTimetables();
+        assert.equal(adapter.states['timetable.montag.1.FACH'], undefined);
+        assert(adapter.objects['timetable.dienstag']);
+        assert.equal(adapter.states['timetable.this_week.montag.1.FACH'], 'Mathe, Physik');
     });
 
     it('keeps separate instances independent and ignores old additional-account settings', async () => {
@@ -252,8 +363,8 @@ describe('weekly timetable polling', () => {
         await second.pollWeeklyTimetables();
         assert.equal(FakeUntis.sessions.length, 2);
         assert.deepEqual(FakeUntis.sessions.map(session => session.username), ['child.name@example.com', 'two']);
-        assert.equal(first.states['timetable.montag.1.FACH'], 'Mathe, Physik');
-        assert.equal(second.states['timetable.montag.1.FACH'], 'Mathe, Physik');
+        assert.equal(first.states['timetable.this_week.montag.1.FACH'], 'Mathe, Physik');
+        assert.equal(second.states['timetable.this_week.montag.1.FACH'], 'Mathe, Physik');
         assert.equal(first.namespace, 'webuntis.0');
         assert.equal(second.namespace, 'webuntis.1');
         assert.equal(second.states['accounts.primary.connection'], true);
@@ -276,7 +387,7 @@ describe('weekly timetable polling', () => {
         assert(adapter.objects.one);
         assert(adapter.objects['one.custom']);
         assert(adapter.objects['other.timetable']);
-        assert.equal(adapter.states['timetable.montag.1.FACH'], 'Mathe, Physik');
+        assert.equal(adapter.states['timetable.this_week.montag.1.FACH'], 'Mathe, Physik');
     });
 
     it('keeps old username data on failure and removes an empty old device after success', async () => {
@@ -295,7 +406,7 @@ describe('weekly timetable polling', () => {
         await adapter.pollWeeklyTimetables();
         assert.equal(adapter.objects.one, undefined);
         assert.equal(adapter.objects['one.timetable'], undefined);
-        assert.equal(adapter.states['timetable.montag.1.FACH'], 'Mathe, Physik');
+        assert.equal(adapter.states['timetable.this_week.montag.1.FACH'], 'Mathe, Physik');
     });
 
     it('does not overwrite unrelated existing account objects', async () => {
@@ -305,7 +416,8 @@ describe('weekly timetable polling', () => {
         adapter.objects.timetable = { type: 'channel', native: { owner: 'other' } };
         await adapter.pollWeeklyTimetables();
         assert.equal(adapter.objects.timetable.native.owner, 'other');
-        assert.equal(adapter.states['timetable.montag.1.FACH'], undefined);
+        assert.equal(adapter.states['timetable.this_week.montag.1.FACH'], undefined);
+        assert.equal(adapter.objects['timetable.this_week'], undefined);
         assert.equal(adapter.states['accounts.primary.connection'], false);
     });
 });

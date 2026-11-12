@@ -14,6 +14,9 @@
 
 Adapter to get data from WebUntis
 
+This is a fork of [Newan/ioBroker.webuntis](https://github.com/Newan/ioBroker.webuntis), maintained at
+[HJS72/ioBroker.webuntis](https://github.com/HJS72/ioBroker.webuntis). Original author: [Newan](https://github.com/Newan).
+
 Dieser Adapter bezieht Daten aus Webuntis. 
 Für eine deutsche Anleitung [hier klicken](readme/readme.de.md)
 
@@ -91,6 +94,9 @@ Login and timetable access depend on school permissions and WebUntis API
 compatibility. Parent accounts only return the timetable exposed by WebUntis for
 that account; use individual student logins when needed.
 
+The JSON-RPC timetable API of some schools omits days that the WebUntis web UI shows.
+For weekdays without lessons, the adapter falls back to the REST timetable used by the web UI.
+
 please feel free, to make a proposal for recommend versions.
 
 ## Changelog
@@ -98,6 +104,10 @@ please feel free, to make a proposal for recommend versions.
     Placeholder for the next version (at the beginning of the line):
     ### **WORK IN PROGRESS**
 -->
+### **WORK IN PROGRESS**
+* (HJS72) Fork of Newan/ioBroker.webuntis: next week timetable, per-lesson states, one account per instance
+* (HJS72) Fix missing days in the timetable (REST fallback), add detailed log output
+
 ### 0.3.4 (2022-05-08)
 * change log-level for error messages
 

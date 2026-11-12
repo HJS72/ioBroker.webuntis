@@ -1,4 +1,4 @@
-![Logo](https://github.com/Newan/ioBroker.webuntis/admin/webuntis.png)
+![Logo](../admin/webuntis.png)
 # ioBroker.webuntis
 
 [![NPM version](https://img.shields.io/npm/v/iobroker.webuntis.svg)](https://www.npmjs.com/package/iobroker.webuntis)
@@ -9,14 +9,14 @@
 
 [![NPM](https://nodei.co/npm/iobroker.webuntis.png?downloads=true)](https://nodei.co/npm/iobroker.webuntis/)
 
-**Tests:** ![Test and Release](https://github.com/Newan/ioBroker.webuntis/workflows/Test%20and%20Release/badge.svg)
+**Tests:** ![Test and Release](https://github.com/HJS72/ioBroker.webuntis/workflows/Test%20and%20Release/badge.svg)
 
 ## webuntis adapter for ioBroker
 
 
-Dieser Adapter bezieht Daten aus Webuntis. Für eine deutsche Anleitung
+Dieser Adapter bezieht Daten aus Webuntis. Fork von [Newan/ioBroker.webuntis](https://github.com/Newan/ioBroker.webuntis), gepflegt unter [HJS72/ioBroker.webuntis](https://github.com/HJS72/ioBroker.webuntis).
 
-This Adapter get data from WebUntis. For english-tutorial ![click here](https://github.com/Newan/ioBroker.webuntis/readme.md)
+For english-tutorial [click here](../README.md)
 
 ## Konfiguration
 Nach der Installation des Adapters in Iobroker und dem erstellen einer Instanz, erscheint automatisch

@@ -18,30 +18,6 @@
     <script type="text/javascript" src="words.js"></script>
 
     <script type="text/javascript">
-        var accountSettingsInvalid = false;
-
-        function addAccount(account, onChange) {
-            var row = $('<div class="row account-row"></div>');
-            [
-                ['id', 'Account ID', 'text'],
-                ['username', 'Username', 'text'],
-                ['password', 'Password', 'password'],
-                ['school', 'School', 'text'],
-                ['baseUrl', 'School base URL', 'text']
-            ].forEach(function (field) {
-                var input = $('<input>').attr({
-                    type: field[2], placeholder: field[1], 'aria-label': field[1],
-                    autocomplete: field[0] === 'password' ? 'new-password' : 'off'
-                }).addClass('account-' + field[0]).val(account[field[0]] || '');
-                input.on('change keyup', function () { onChange(); });
-                row.append($('<div class="col s12 m4 input-field"></div>').append(input));
-            });
-            var remove = $('<button type="button" class="btn-flat" title="Remove account" aria-label="Remove account"><i class="material-icons">delete</i></button>');
-            remove.on('click', function () { row.remove(); onChange(); });
-            row.append($('<div class="col s12 m2"></div>').append(remove));
-            $('#accounts').append(row);
-        }
-
         // This will be called by the admin adapter when the settings page loads
         function load(settings, onChange) {
             if (!settings) return;
@@ -54,9 +30,6 @@
 
                 if (settings.client_secret) {
                     settings.client_secret = decrypt(_secret, settings.client_secret);
-                }
-                if (settings.accounts_json) {
-                    settings.accounts_json = decrypt(_secret, settings.accounts_json);
                 }
             }
 
@@ -77,17 +50,6 @@
                         ;
                 }
             });
-            $('#accounts').empty();
-            accountSettingsInvalid = false;
-            try {
-                var accounts = settings.accounts_json ? JSON.parse(settings.accounts_json) : [];
-                if (!Array.isArray(accounts)) throw new Error('Invalid accounts');
-                accounts.forEach(function (account) { addAccount(account, onChange); });
-            } catch (error) {
-                accountSettingsInvalid = true;
-                $('#account-error').show();
-            }
-            $('#add-account').off('click').on('click', function () { addAccount({}, onChange); onChange(); });
             onChange(false);
             // reinitialize all the Materialize labels on the page if you are dynamically adding inputs:
             if (M) M.updateTextFields();
@@ -130,10 +92,6 @@
 
         // This will be called by the admin adapter when the user presses the save button
         function save(callback) {
-            if (accountSettingsInvalid) {
-                alert('Additional accounts could not be decoded. Settings were not saved.');
-                return;
-            }
             // example: select elements with class=value and build settings object
             var obj = {};
             $('.value').each(function () {
@@ -156,29 +114,6 @@
 
                 }
             });
-            var accounts = [];
-            var invalid = false;
-            var ids = ['primary'];
-            $('.account-row').each(function () {
-                var row = $(this);
-                var account = {};
-                ['id', 'username', 'password', 'school', 'baseUrl'].forEach(function (field) {
-                    var value = row.find('.account-' + field).val();
-                    account[field] = field === 'password' ? value : value.trim();
-                });
-                if (!/^[a-zA-Z0-9_-]+$/.test(account.id) || ids.indexOf(account.id) !== -1 ||
-                    !account.username || !account.password || !account.school || !account.baseUrl) invalid = true;
-                ids.push(account.id);
-                accounts.push(account);
-            });
-            if (invalid) {
-                alert('Complete every account field. IDs must be unique and contain only letters, numbers, underscores, or hyphens; primary is reserved.');
-                return;
-            }
-            obj.accounts_json = accounts.length ? JSON.stringify(accounts) : '';
-            if (obj.accounts_json && (typeof supportsFeature !== 'function' || !supportsFeature('ADAPTER_AUTO_DECRYPT_NATIVE'))) {
-                obj.accounts_json = encrypt(_secret, obj.accounts_json);
-            }
             callback(obj);
         }
     </script>
@@ -218,7 +153,7 @@
 		<div class="row">
 			<div class="col s6">
                 <p class="translate">
-                    Für die richtigen Einstellungen nutzen See bitte die <a href="https://github.com/Newan/ioBroker.webuntis" target="_blank">Anleitung</a>
+                    Für die richtigen Einstellungen nutzen See bitte die <a href="https://github.com/HJS72/ioBroker.webuntis" target="_blank">Anleitung</a>
                 </p>
             </div>
 		</div>
@@ -265,14 +200,6 @@
                 <label for="baseUrl" class="translate">School base url</label>
             </div>
 		</div>
-        <div class="row">
-            <div class="col s12"><h6>Additional accounts</h6></div>
-            <div class="col s12" id="account-error" style="display:none">Additional accounts could not be decoded. Settings cannot be saved.</div>
-        </div>
-        <div id="accounts"></div>
-        <div class="row"><div class="col s12">
-            <button type="button" id="add-account" class="btn-flat" title="Add account" aria-label="Add account"><i class="material-icons">add</i></button>
-        </div></div>
     </div>
 
 </body>

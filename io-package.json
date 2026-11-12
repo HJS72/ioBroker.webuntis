@@ -136,8 +136,8 @@
         "main": "build/main.js",
         "icon": "webuntis.png",
         "enabled": true,
-        "extIcon": "https://raw.githubusercontent.com/Newan/ioBroker.webuntis/main/admin/webuntis.png",
-        "readme": "https://github.com/Newan/ioBroker.webuntis/blob/main/README.md",
+        "extIcon": "https://raw.githubusercontent.com/HJS72/ioBroker.webuntis/main/admin/webuntis.png",
+        "readme": "https://github.com/HJS72/ioBroker.webuntis/blob/main/README.md",
         "loglevel": "info",
         "mode": "daemon",
         "type": "date-and-time",
@@ -162,8 +162,7 @@
         "username": "",
         "client_secret": "",
         "school": "",
-        "baseUrl": "",
-        "accounts_json": ""
+        "baseUrl": ""
     },
     "protectedNative": [
         "client_secret",
